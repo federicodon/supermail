@@ -2507,9 +2507,20 @@ export default function App() {
         case "prev-conversation":
           openNeighborThread(-1);
           break;
-        case "open":
-          if (currentThread) open(currentThread);
+        case "open": {
+          // Superhuman's signature loop: Enter opens a conversation from the
+          // list — and *starts the reply* when you're already reading it.
+          // Read → Enter → (⌘J to dictate) → ⌘↵ → next. The reply targets the
+          // message you're focused on (j/k), falling back to the latest
+          // inbound, and quotes your text selection if you made one.
+          if (openThread) {
+            const tgt = replyTargetMessage(openThread.messages, focusedMsgIdRef.current);
+            if (tgt) startReply(tgt, undefined, readerSelection());
+          } else if (currentThread) {
+            open(currentThread);
+          }
           break;
+        }
         case "back":
           setOpenThreadId(null);
           break;
@@ -2711,7 +2722,9 @@ export default function App() {
       }
       if (mod && e.key.toLowerCase() === "j") {
         e.preventDefault();
-        setAskOpen((v) => !v);
+        // In the composer ⌘J belongs to "Write with AI" (Compose handles it
+        // and stops propagation); never stack the Ask panel over a draft.
+        if (!draft) setAskOpen((v) => !v);
         return;
       }
 

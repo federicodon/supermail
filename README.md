@@ -194,7 +194,10 @@ Prefer review-first? **Save draft** still creates a Gmail draft you send yoursel
 | --- | --- |
 | `⌘K` / `Ctrl+K` | Command palette |
 | `J` / `↓`, `K` / `↑` | Move selection (or messages within an open thread) |
-| `Enter` | Open message |
+| `Enter` | Open conversation — **and start the reply when you're already reading it** |
+| `⌘J` (in compose) | **Write with AI**: describe the message, `Enter` writes it |
+| `⌘J` (elsewhere) | Ask AI about your inbox |
+| `⌘↵` / `Ctrl+↵` | Send (from anywhere in the composer; `⌘⇧↵` = Send & Archive) |
 | `E` | Archive |
 | `H` | Snooze (tomorrow) |
 | `S` | Star / unstar |
@@ -206,6 +209,22 @@ Prefer review-first? **Save draft** still creates a Gmail draft you send yoursel
 | `/` | Focus search |
 | `?` | Shortcuts guide |
 | `Esc` | Close pane / modal |
+
+**The reply loop**, end to end without touching the mouse: `j`/`k` to a thread →
+`Enter` (open) → `Enter` (reply — body focused, caret above the quote) → `⌘J`
+(tell AI what to say, `Enter` writes it) → edit if needed → `⌘↵` (send, undo
+window included) → next.
+
+## Chrome extension (one keystroke from anywhere)
+
+`extension/` ships a minimal MV3 extension: **Ctrl/⌘+Shift+M** (or the toolbar
+⚡) opens SuperMail from any tab — focusing the already-open pinned tab if there
+is one. Install: `chrome://extensions` → Developer mode → **Load unpacked** →
+select `extension/`. Point it at `http://localhost:8787` (local bridge = real
+two-way Gmail sync) or the demo URL from the options page. No store, no
+third-party servers — it only stores your chosen URL. Prefer zero installs?
+Just bookmark `http://localhost:8787` once the bridge is running. Details in
+[`extension/README.md`](extension/README.md).
 
 ## Setup & run
 

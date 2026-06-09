@@ -11,7 +11,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "up", keys: ["k"], label: "Move up (list, or messages in a thread)", group: "Navigation" },
   { id: "next-conversation", keys: ["shift+j"], label: "Next conversation (open it)", group: "Navigation" },
   { id: "prev-conversation", keys: ["shift+k"], label: "Previous conversation (open it)", group: "Navigation" },
-  { id: "open", keys: ["Enter"], label: "Open conversation", group: "Navigation", needsCurrent: true },
+  { id: "open", keys: ["Enter"], label: "Open conversation · reply when reading", group: "Navigation", needsCurrent: true },
   { id: "back", keys: ["u"], label: "Back to list", group: "Navigation" },
   { id: "search", keys: ["/"], label: "Search", group: "Navigation" },
   { id: "palette", keys: ["mod+k"], label: "Command palette", group: "Navigation" },

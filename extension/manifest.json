@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "SuperMail — keyboard-first email",
+  "version": "1.0.0",
+  "description": "Open SuperMail instantly from any tab (Ctrl/⌘+Shift+M). Keyboard-first email: read, Enter to reply, ⌘J to dictate, ⌘↵ to send.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Open SuperMail (Ctrl/⌘+Shift+M)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "permissions": ["storage", "tabs"],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+M",
+        "mac": "Command+Shift+M"
+      },
+      "description": "Open / focus SuperMail"
+    }
+  }
+}

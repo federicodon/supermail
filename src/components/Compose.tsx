@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { Draft, Snippet } from "../types";
 import { writeWithAi, rephrase, REWRITE_MODES } from "../lib/ai";
 import { DEFAULT_PERSONALIZATION, type Personalization } from "../lib/personalization";
@@ -50,6 +50,7 @@ export function Compose({
   onRequestAvailability?: () => string;
 }) {
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const toRef = useRef<HTMLInputElement>(null);
   const [showCc, setShowCc] = useState(!!draft.cc || !!draft.bcc);
   const [showLater, setShowLater] = useState(false);
   const [aiIntent, setAiIntent] = useState("");
@@ -74,6 +75,15 @@ export function Compose({
       pendingCaret.current = null;
     }
   }, [draft.body]);
+
+  // Focus on open so the whole keyboard chain works without a click:
+  // a reply (recipient known) lands in the body, caret above the quote;
+  // a fresh message lands in "To". Runs once per composer mount.
+  useEffect(() => {
+    if (draft.inReplyTo || draft.to) bodyRef.current?.focus();
+    else toRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Context for variable expansion: recipient (from "To"), the user's name.
   const snippetCtx = (): SnippetContext => ({
@@ -138,6 +148,18 @@ export function Compose({
   };
 
   const onComposeKey = (e: React.KeyboardEvent) => {
+    // ⌘/Ctrl+J: toggle the "Write with AI" prompt — describe the message,
+    // Enter writes it, edit if you like, ⌘↵ sends. (The app-wide ⌘J = Ask
+    // panel is suppressed while the composer is open.)
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
+      e.preventDefault();
+      e.stopPropagation();
+      setShowAi((v) => {
+        if (v) bodyRef.current?.focus();
+        return !v;
+      });
+      return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
@@ -194,6 +216,7 @@ export function Compose({
         )}
 
         <input
+          ref={toRef}
           className="compose-field"
           placeholder="To"
           value={draft.to}
@@ -261,7 +284,7 @@ export function Compose({
           <div className="ai-intent">
             <input
               autoFocus
-              placeholder="Describe the message, e.g. “ask Dana for the Q3 numbers”"
+              placeholder="Tell AI what to write, e.g. “ask Dana for the Q3 numbers” — Enter writes it"
               value={aiIntent}
               onChange={(e) => setAiIntent(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && runAi()}
@@ -355,7 +378,9 @@ export function Compose({
               </div>
             )}
           </div>
-          <button onClick={() => setShowAi((v) => !v)}>✦ Write with AI</button>
+          <button onClick={() => setShowAi((v) => !v)} title="Describe the message; Enter writes it (⌘J)">
+            ✦ Write with AI <kbd>⌘J</kbd>
+          </button>
           <div className="send-later-wrap">
             <button onClick={() => setShowRewrite((v) => !v)} title="Rewrite the draft with AI">✦ Rewrite ▾</button>
             {showRewrite && (

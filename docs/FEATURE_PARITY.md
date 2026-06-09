@@ -32,7 +32,7 @@ Legend: ✅ shipped · 🟡 partial / in progress · ⬜ not started
 | `g`-chord navigation (g+i inbox, g+t starred…) | Yes | Yes, chord engine | ✅ |
 | Move down/up (j/k + arrows) | Yes | Yes | ✅ |
 | **Flip through conversations from the reader** | Yes (process without leaving the reader) | Yes — **Shift+J / Shift+K** jump to the next / previous conversation *and open it*, so you can fly through the inbox without bouncing back to the list; anchored on the thread you're reading (works mid-thread), clamped at the ends (no wrap). Distinct from j/k, which move the row cursor in the list and step between messages inside a thread. Palette commands + shortcuts guide | ✅ |
-| Open / back (Enter / Esc / u) | Yes | Yes | ✅ |
+| Open / back (Enter / Esc / u) | Yes | Yes — and **Enter while reading starts the reply** (the read → Enter → ⌘J → ⌘↵ loop), targeting the j/k-focused message and quoting any selection | ✅ |
 | **Auto-advance to next conversation after triage** | Yes (core flow) | Yes — archive/delete/snooze/mute/spam from the reader jumps straight to the next thread (marks it read), settings toggle + palette command | ✅ |
 | Mark read/unread, select, range select | Yes | Read/unread (`t`), mark-unread (`⇧U`), star, `x` select + shift-click range | ✅ |
 | Delete to Trash / mark Spam by keyboard | Yes (`#` / `!`) | Yes — `#` Trash, `!` Spam, both undoable | ✅ |
@@ -121,7 +121,7 @@ Legend: ✅ shipped · 🟡 partial / in progress · ⬜ not started
 | CC/BCC toggle | Yes | Yes | ✅ |
 | Send later from compose | Yes | Yes | ✅ |
 | **Remind me if no reply, from compose** | Yes (set a follow-up as you send) | Yes — a reply's composer carries an **⏰ Remind me if no reply** toggle + duration (1 day / 2 / 3 / 1 week, default 3 days); when the reply actually leaves (so cancelling within the undo window never arms one) a follow-up reminder is placed on the conversation, firing then *unless* they reply first. Shows in Reminders & Today; the send toast confirms "follow-up armed" | ✅ |
-| Write with AI in compose | Yes | Yes (local fallback) | ✅ |
+| Write with AI in compose | Yes | Yes (local fallback) — **⌘J** toggles the prompt bar in the composer (autofocused; Enter writes the draft, editable, ⌘↵ sends); composer autofocuses body/To on open so the loop needs no mouse | ✅ |
 | Saved **Drafts** folder (resume / discard) | Yes | Yes — persisted Drafts view, `g d`, edit-in-place, send removes it | ✅ |
 | **Signature** auto-inserted (new / reply / forward) | Yes | Yes — editable in Settings, placed above the quoted text with the RFC 3676 `-- ` delimiter; AI drafts use the learned voice sign-off instead | ✅ |
 | **Pre-send guardrails** (forgot-attachment, empty subject, bad recipient) | Partial (Gmail-style nudges) | Yes — every send path (Send · Send & Archive · Send Later · ⌘↵) is gated by deterministic checks: no recipient is a hard **block**; a malformed To/Cc/Bcc address, an empty subject or body, the classic "you wrote *attached* but nothing is", a large visible audience (8+ To/Cc — nudges toward Bcc), and an **unfilled template placeholder** (a leftover `{{first_name}}` merge token or a bracketed filler like `[insert link]` / `[date]`) each raise a **warn**. The attachment & placeholder scans read only your fresh text (not the quoted reply trail) and are false-positive-guarded ("attached to the idea", a `[1]` footnote, an `[EXTERNAL]` tag, a markdown `[x]` checkbox never trip them). Warnings surface a **Send anyway / Keep editing** review bar; blockers can't be overridden | ✅ |
@@ -276,6 +276,31 @@ Legend: ✅ shipped · 🟡 partial / in progress · ⬜ not started
 
 ## Shipped backlog (most recent first)
 
+- **Slice 90 (The reply loop + Chrome extension)** — the signature Superhuman
+  cadence, end to end without the mouse, plus a distribution story. **(1)
+  Enter replies when reading**: `Enter` still opens a conversation from the
+  list, but when a conversation is already open it now *starts the reply* —
+  targeting the j/k-focused message (falling back to the latest inbound) and
+  quoting your text selection, exactly like the `r` key (`runAction "open"`);
+  shortcut guide label updated. **(2) Focus lands right**: the composer now
+  autofocuses on mount — replies (and any prefilled To) land in the body with
+  the caret above the quote, fresh messages land in To — so the whole chain
+  works without a click. **(3) ⌘J = Write-with-AI in the composer**: ⌘J
+  toggles the AI prompt bar (autofocused; `Enter` generates into the draft,
+  which stays editable; `⌘↵` sends via the existing guarded path with the undo
+  window). The app-wide ⌘J (Ask panel) is suppressed while a draft is open so
+  the two can never stack; outside compose it behaves as before. **(4) Chrome
+  extension** (`extension/`, MV3): toolbar ⚡ + **Ctrl/⌘+Shift+M** opens
+  SuperMail from any tab, focusing the existing pinned tab when there is one;
+  options page picks the target (local bridge `:8787` = real Gmail, dev
+  server, or the Pages demo) stored in `chrome.storage.sync`; icons generated
+  from the app logo; install = Load unpacked (no store, no third-party
+  servers). Verified end-to-end in headless Chromium: Enter-in-reader → Reply
+  (body focused, To filled), ⌘J prompt → Enter writes the draft, ⌘↵ queues the
+  send with the undo toast + Outbox row, ⌘J-without-draft still opens Ask, no
+  Ask/compose stacking; extension loads, persists its URL and opens the app in
+  a pinned tab. UI wiring over existing tested primitives (still **675
+  passing**, 57 files); build green.
 - **Slice 89 (Speed engine: virtualized list, quantized clock, latency HUD,
   10k benchmark, design-system pass)** — made "faster than Superhuman" a
   measured property instead of a vibe, and fixed the systemic render costs that
