@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { BlockEntry, Contact, Draft, Email, Label, OutboxItem, Snippet, SplitInbox, View } from "./types";
 import { freshMockEmails } from "./data/mockMailbox";
 import { DEFAULT_SNIPPETS } from "./data/snippets";
@@ -140,7 +140,9 @@ import {
 import { computeStats, nextActions, type InboxStats } from "./lib/stats";
 import { buildAgenda, agendaTodayCount, type AgendaItem } from "./lib/agenda";
 import { type AgendaActionId } from "./lib/agendaActions";
-import { TodayView } from "./components/TodayView";
+import { smartTimeLabel } from "./lib/timeLabels";
+import { virtualWindow, followScrollTop, rowHeightFor } from "./lib/virtualList";
+import { recordLatency, latencySnapshot, clearLatency, runPipelineBenchmark, formatMs, type BenchResult } from "./lib/perf";
 import { neighborId, initialFocusId } from "./lib/messageNav";
 import { replyTargetMessage, focusedOrLatest, selectionPreview, selectionWordCount } from "./lib/replyTarget";
 import { meetingRequestInThread, meetingReasonText } from "./lib/meetingIntent";
@@ -226,14 +228,19 @@ import {
 } from "./lib/keymap";
 import { THEMES, getTheme, nextTheme, themeVars } from "./lib/theme";
 import { CommandPalette, type Command } from "./components/CommandPalette";
-import { ShortcutsGuide } from "./components/ShortcutsGuide";
 import { Compose } from "./components/Compose";
-import { Settings } from "./components/Settings";
-import { AskPanel } from "./components/AskPanel";
 import { Onboarding } from "./components/Onboarding";
-import { CalendarView } from "./components/CalendarView";
-import { PeopleView } from "./components/PeopleView";
 import { TimePicker, RemindPicker } from "./components/TimePicker";
+
+// Heavy, occasionally-used surfaces are code-split so the critical bundle (the
+// inbox itself) stays small and first paint stays fast. Everything on the hot
+// path — list, reader, compose, palette — ships eagerly.
+const Settings = lazy(() => import("./components/Settings").then((m) => ({ default: m.Settings })));
+const ShortcutsGuide = lazy(() => import("./components/ShortcutsGuide").then((m) => ({ default: m.ShortcutsGuide })));
+const AskPanel = lazy(() => import("./components/AskPanel").then((m) => ({ default: m.AskPanel })));
+const CalendarView = lazy(() => import("./components/CalendarView").then((m) => ({ default: m.CalendarView })));
+const PeopleView = lazy(() => import("./components/PeopleView").then((m) => ({ default: m.PeopleView })));
+const TodayView = lazy(() => import("./components/TodayView").then((m) => ({ default: m.TodayView })));
 
 const ONBOARDING_KEY = "supermail.onboarded.v1";
 const DEFAULT_TARGET_GMAIL = "federico.donatone@growthcab.com";
@@ -297,6 +304,207 @@ function outboxToEmail(item: OutboxItem, accounts: Account[], self: { name: stri
   };
 }
 
+// ---- Conversation list (virtualized + memoized) ----
+//
+// The list is the hottest surface in the app, so it gets the full treatment:
+//  - windowed rendering: only the viewport ± overscan hits the DOM, so a
+//    50,000-thread mailbox scrolls like a 50-thread one (fixed row heights —
+//    see `.row` in styles.css — keep the math exact);
+//  - memoized rows: a j/k move repaints exactly two rows, not the whole list;
+//  - a stable dispatch ref (ThreadListApi) so handler identity never
+//    invalidates the row memo;
+//  - keyboard scroll-follow: the selection can never walk off-screen.
+
+interface ThreadListApi {
+  openRow: (t: Thread, index: number) => void;
+  rangeSelect: (index: number) => void;
+  toggleSelect: (id: string, index: number) => void;
+  toggleStar: (t: Thread) => void;
+  rowAction: (id: RowActionId, t: Thread, index: number) => void;
+}
+
+const ThreadRow = memo(function ThreadRow({
+  t,
+  index,
+  sel,
+  picked,
+  noted,
+  focusReason,
+  now,
+  view,
+  api,
+}: {
+  t: Thread;
+  index: number;
+  sel: boolean;
+  picked: boolean;
+  noted: boolean;
+  focusReason: string[] | undefined;
+  now: number;
+  view: View;
+  api: { current: ThreadListApi };
+}) {
+  return (
+    <li
+      className={`row ${sel ? "sel" : ""} ${t.hasUnread ? "unread" : "read"} ${picked ? "picked" : ""}`}
+      onClick={(ev) => {
+        if (ev.shiftKey) {
+          api.current.rangeSelect(index);
+          return;
+        }
+        api.current.openRow(t, index);
+      }}
+    >
+      <input
+        type="checkbox"
+        className="row-check"
+        checked={picked}
+        aria-label={`Select ${t.subject}`}
+        onClick={(ev) => ev.stopPropagation()}
+        onChange={() => api.current.toggleSelect(t.id, index)}
+      />
+      <span
+        className="star"
+        onClick={(ev) => {
+          ev.stopPropagation();
+          api.current.toggleStar(t);
+        }}
+      >
+        {t.starred ? "★" : "☆"}
+      </span>
+      <span className="sender">
+        <span className="unread-dot" aria-hidden="true" />
+        <span className="row-av" style={{ background: avatarColor(t.latest.from.email) }} aria-hidden="true">
+          {contactInitials(t.latest.from.name || t.latest.from.email)}
+        </span>
+        <span className="sender-text">{participantsLabel(t)}</span>
+        {t.count > 1 && <span className="thread-pill">{t.count}</span>}
+      </span>
+      <span className="subj">
+        <strong>{t.subject}</strong> <span className="prev">— {t.latest.preview}</span>
+        {focusReason?.length ? (
+          <span className="row-focus" title={focusReason.join(" · ")}>
+            ⚡ {focusReason[0]}
+          </span>
+        ) : null}
+        {t.labels.map((l) => (
+          <span key={l} className="row-label">{l}</span>
+        ))}
+        {t.pinned && <span className="row-pin" title="Pinned">📌</span>}
+        {t.muted && <span className="row-mute" title="Muted">🔕</span>}
+        {noted && <span className="row-note" title="Has a private note">📝</span>}
+        {t.reminderAt && <span className="row-reminder">⏰ {reminderLabel(t.latest, now)}</span>}
+        {t.hasAttachment && <span className="row-attach">📎</span>}
+      </span>
+      <span className="time">{smartTimeLabel(t.latestDate, now)}</span>
+      <span className="row-actions" role="group" aria-label="Quick actions">
+        {rowActions({ hasUnread: t.hasUnread, pinned: t.pinned }, view).map((a) => (
+          <button
+            key={a.id}
+            className="row-act"
+            title={a.label}
+            aria-label={a.label}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              api.current.rowAction(a.id, t, index);
+            }}
+          >
+            {a.icon}
+          </button>
+        ))}
+      </span>
+    </li>
+  );
+});
+
+const ThreadList = memo(function ThreadList({
+  threads,
+  selected,
+  selection,
+  view,
+  notes,
+  now,
+  focusReasons,
+  density,
+  emptyText,
+  api,
+}: {
+  threads: Thread[];
+  selected: number;
+  selection: Set<string>;
+  view: View;
+  notes: NoteMap;
+  now: number;
+  focusReasons: Map<string, string[]> | null;
+  density: string;
+  emptyText: string;
+  api: { current: ThreadListApi };
+}) {
+  const ulRef = useRef<HTMLUListElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(800);
+  const rafRef = useRef(0);
+  const rowH = rowHeightFor(density);
+
+  // Scroll state lives *here*, not in App: a scroll frame re-renders this
+  // (memoized) component only, never the whole app. rAF-coalesced so a fast
+  // wheel emits at most one state write per frame.
+  const onScroll = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      const el = ulRef.current;
+      if (el) setScrollTop(el.scrollTop);
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = ulRef.current;
+    if (!el) return;
+    setViewportH(el.clientHeight);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setViewportH(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Keyboard scroll-follow: keep the selected row on screen (j/k, Shift+J/K,
+  // auto-advance). Reads the live DOM scroll position (state may lag a frame).
+  useEffect(() => {
+    const el = ulRef.current;
+    if (!el) return;
+    const next = followScrollTop(selected, rowH, el.scrollTop, el.clientHeight);
+    if (next != null) el.scrollTo({ top: next });
+    setScrollTop(el.scrollTop);
+  }, [selected, rowH, threads.length]);
+
+  const win = virtualWindow(threads.length, rowH, scrollTop, viewportH);
+
+  return (
+    <ul className="list" ref={ulRef} onScroll={onScroll}>
+      {threads.length === 0 && <li className="empty">{emptyText}</li>}
+      {win.topPad > 0 && <li className="vpad" style={{ height: win.topPad }} aria-hidden="true" />}
+      {threads.slice(win.start, win.end).map((t, i) => {
+        const index = win.start + i;
+        return (
+          <ThreadRow
+            key={t.id}
+            t={t}
+            index={index}
+            sel={index === selected}
+            picked={selection.has(t.id)}
+            noted={hasNote(notes, t.id)}
+            focusReason={focusReasons?.get(t.id)}
+            now={now}
+            view={view}
+            api={api}
+          />
+        );
+      })}
+      {win.bottomPad > 0 && <li className="vpad" style={{ height: win.bottomPad }} aria-hidden="true" />}
+    </ul>
+  );
+});
+
 export default function App() {
   // Load any locally-persisted working set once; fall back to fresh seed data.
   const persisted = useMemo(() => loadState(), []);
@@ -357,6 +565,10 @@ export default function App() {
   // messages while a conversation is open). See src/lib/messageNav.ts.
   const [focusedMsgId, setFocusedMsgId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // The input echoes `query` instantly; the (potentially expensive) filter
+  // pipeline reads this deferred copy, so typing never blocks on search work —
+  // React renders the keystroke first and reconciles the list right after.
+  const deferredQuery = useDeferredValue(query);
   // When navigating to the People view from a sender card, the contact to focus.
   const [focusPerson, setFocusPerson] = useState<string | null>(null);
 
@@ -424,7 +636,27 @@ export default function App() {
     );
   }, [gmail, gmailTokens, gmailConnectedEmail, gmailTargetEmail]);
   const ai = useMemo(() => loadAiConfig(), []);
-  const now = Date.now();
+
+  // The UI clock. This used to be `Date.now()` evaluated on *every* render,
+  // which poisoned every memo downstream (scoped → list → search → threads →
+  // focus all re-derived on each keystroke). It's now state that ticks every
+  // 30s — and immediately on tab re-focus — so derived data stays cached
+  // between ticks. Snooze returns / reminders / agenda are minute-grained, so
+  // the tick is indistinguishable in the UI, but triage actions stop paying
+  // for a full pipeline recompute.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const id = window.setInterval(tick, 30_000);
+    const onVis = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
 
   const emailsRef = useRef(emails);
   const viewRef = useRef(view);
@@ -446,9 +678,37 @@ export default function App() {
 
   // Persist the working set so a reload keeps triage state, splits, snippets,
   // outbox and settings (local-first; nothing leaves the device).
+  //
+  // Debounced: serializing a whole mailbox synchronously on *every* keystroke
+  // of triage was the single biggest main-thread cost per action. Writes now
+  // coalesce behind a short timer, and a pagehide/beforeunload flush guarantees
+  // nothing is lost on tab close — same durability, ~zero per-action cost.
+  const pendingSave = useRef<Parameters<typeof saveState>[0] | null>(null);
   useEffect(() => {
-    saveState({ emails, splits, labels, outbox, drafts, snippets, savedSearches, blocks, accounts, personalization, settings, keymap, notes, contactNotes, vips, ui: { recentCmds, activeSplitId, activeAccountId } });
+    pendingSave.current = { emails, splits, labels, outbox, drafts, snippets, savedSearches, blocks, accounts, personalization, settings, keymap, notes, contactNotes, vips, ui: { recentCmds, activeSplitId, activeAccountId } };
+    const id = window.setTimeout(() => {
+      if (pendingSave.current) {
+        saveState(pendingSave.current);
+        pendingSave.current = null;
+      }
+    }, 350);
+    return () => window.clearTimeout(id);
   }, [emails, splits, labels, outbox, drafts, snippets, savedSearches, blocks, accounts, personalization, settings, keymap, notes, contactNotes, vips, recentCmds, activeSplitId, activeAccountId]);
+  useEffect(() => {
+    const flush = () => {
+      if (pendingSave.current) {
+        saveState(pendingSave.current);
+        pendingSave.current = null;
+      }
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      flush();
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }, []);
 
   // Paint the chosen theme: write its CSS variables straight onto the document
   // root (single source of truth = the theme registry), plus data-* attributes
@@ -458,8 +718,20 @@ export default function App() {
     const vars = themeVars(settings.theme, settings.accent);
     for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
     root.setAttribute("data-theme", settings.theme);
-    root.setAttribute("data-theme-group", getTheme(settings.theme).group);
+    const group = getTheme(settings.theme).group;
+    root.setAttribute("data-theme-group", group);
     root.setAttribute("data-density", settings.density);
+    // Mirror the applied vars into a tiny blob the index.html inline script
+    // re-applies *before first paint* on the next load — a dark-theme user
+    // never sees a white flash while the bundle loads.
+    try {
+      localStorage.setItem(
+        "supermail.theme.v1",
+        JSON.stringify({ vars, theme: settings.theme, group, density: settings.density })
+      );
+    } catch {
+      /* ignore */
+    }
   }, [settings.theme, settings.accent, settings.density]);
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -881,7 +1153,7 @@ export default function App() {
     // Saved searches / global search run across the whole mailbox (Trash
     // excluded unless the query explicitly asks for in:all).
     if (view === "search") {
-      return query.toLowerCase().includes("in:all") ? scoped : scoped.filter((e) => !e.trashed);
+      return deferredQuery.toLowerCase().includes("in:all") ? scoped : scoped.filter((e) => !e.trashed);
     }
     if (view === "reminders") return scoped.filter((e) => e.reminderAt && !e.trashed);
     // Focus reuses the inbox's visible set; the ranking/filtering happens at the
@@ -900,15 +1172,15 @@ export default function App() {
     )
       return [];
     return visibleForView(scoped, view, now);
-  }, [scoped, view, activeLabel, query, now]);
+  }, [scoped, view, activeLabel, deferredQuery, now]);
 
   const list = useMemo(() => {
     let v = baseList;
     // The "All" pseudo-tab shows every inbox thread (no per-split filter).
     if (view === "inbox" && activeSplitId !== ALL_SPLIT_ID && activeSplit)
       v = v.filter((e) => matchSplit(e, activeSplit));
-    return searchQuery(v, query, now);
-  }, [baseList, view, activeSplit, activeSplitId, query, now]);
+    return searchQuery(v, deferredQuery, now);
+  }, [baseList, view, activeSplit, activeSplitId, deferredQuery, now]);
 
   // VIP correspondents — the frequent/starred heuristic, with the user's manual
   // VIP overrides layered on top (pin someone important, demote someone noisy).
@@ -926,12 +1198,25 @@ export default function App() {
     return view === "focus" ? focusThreads(grouped, vipEmails, now) : grouped;
   }, [list, view, vipEmails, now]);
 
+  // Why each Focus row matters — computed once per thread set instead of twice
+  // per row per render (the row shows reasons[0]; the tooltip joins them all).
+  const focusReasons = useMemo(() => {
+    if (view !== "focus") return null;
+    return new Map(threads.map((t) => [t.id, threadPriority(t, vipEmails, now).reasons]));
+  }, [view, threads, vipEmails, now]);
+
   // Count of attention-worthy inbox threads (drives the Focus sidebar badge),
   // computed independently of the current view.
   const focusCount = useMemo(
     () => groupThreads(visibleForView(scoped, "inbox", now)).filter((t) => isAttentionWorthy(t, vipEmails, now)).length,
     [scoped, vipEmails, now]
   );
+
+  // Glanceable unread badge in the tab title ("(3) SuperMail").
+  const titleUnread = useMemo(() => accountUnread(emails, activeAccountId, now), [emails, activeAccountId, now]);
+  useEffect(() => {
+    document.title = titleUnread > 0 ? `(${titleUnread}) SuperMail` : "SuperMail";
+  }, [titleUnread]);
 
   useEffect(() => {
     if (selected >= threads.length) setSelected(Math.max(0, threads.length - 1));
@@ -2447,7 +2732,12 @@ export default function App() {
       chord.current = next;
       if (id) {
         e.preventDefault();
+        // Time every keyboard action from keydown to the next committed frame
+        // — the live "input → render" latency shown in Stats → Speed. This is
+        // the number Superhuman markets as "under 100ms"; here it's measured.
+        const t0 = performance.now();
         runAction(id);
+        requestAnimationFrame(() => recordLatency(performance.now() - t0));
       } else if (next.pending) {
         // We started a chord (e.g. pressed "g"); swallow it.
         e.preventDefault();
@@ -2618,6 +2908,29 @@ export default function App() {
       case "deleteForever": return deleteForever(thread.id);
     }
   };
+
+  // Stable dispatch surface for the memoized ThreadList/ThreadRow components:
+  // the ref identity never changes (so rows never re-render because a handler
+  // closure was re-created), while the current-render closures stay reachable.
+  const listApi = useRef<ThreadListApi>({
+    openRow: () => {},
+    rangeSelect: () => {},
+    toggleSelect: () => {},
+    toggleStar: () => {},
+    rowAction: () => {},
+  });
+  useEffect(() => {
+    listApi.current = {
+      openRow: (t, i) => {
+        setSelected(i);
+        open(t);
+      },
+      rangeSelect,
+      toggleSelect,
+      toggleStar: (t) => mutateThread(t.starred ? "Unstarred" : "Starred", t.id, { starred: !t.starred }),
+      rowAction: runRowAction,
+    };
+  });
   // Inbox-Zero sweep counts for the current list (drives the split-row actions).
   const sweepReadCount = view === "inbox" ? archiveReadPlan(threads).count : 0;
   const sweepUnreadCount = view === "inbox" ? markAllReadPlan(threads).count : 0;
@@ -2778,6 +3091,7 @@ export default function App() {
       </aside>
 
       <main className="main">
+        <Suspense fallback={<div className="lazy-loading" aria-label="Loading view" />}>
         {view === "settings" ? (
           <Settings
             gmail={gmail}
@@ -2870,6 +3184,13 @@ export default function App() {
                   onChange={(e) => setQuery(e.target.value)}
                   onFocus={() => setSearchHelp(true)}
                   onBlur={() => window.setTimeout(() => setSearchHelp(false), 150)}
+                  onKeyDown={(e) => {
+                    // Esc: first press clears the query, second returns to the list.
+                    if (e.key === "Escape") {
+                      if (query) setQuery("");
+                      else (e.target as HTMLInputElement).blur();
+                    }
+                  }}
                 />
                 {searchHelp && (
                   <div className="search-help">
@@ -3043,87 +3364,34 @@ export default function App() {
               <RemindersView buckets={reminders} now={now} emails={scoped} onOpen={openById} onClear={(id) => mutate("Cleared reminder", id, { reminderAt: null, remindIfNoReply: false })} onReschedule={(id, at, ifNoReply) => mutate("Reminder rescheduled", id, { reminderAt: at.toISOString(), remindIfNoReply: ifNoReply, reminderSetAt: new Date().toISOString() })} onFollowUp={(e) => startReply(e, followUpDraft(e, personalization))} />
             ) : (
               <div className="panes">
-                <ul className="list">
-                  {threads.length === 0 && (
-                    <li className="empty">
-                      {query
-                        ? "No matching mail."
-                        : view === "inbox"
-                        ? "Inbox zero ✨"
-                        : view === "focus"
-                        ? "Nothing needs your attention ✨"
-                        : view === "trash"
-                        ? "Trash is empty."
-                        : view === "spam"
-                        ? "No spam — nice."
-                        : "Nothing here."}
-                    </li>
-                  )}
-                  {threads.map((t, i) => {
-                    const picked = selection.has(t.id);
-                    return (
-                    <li
-                      key={t.id}
-                      className={`row ${i === selected ? "sel" : ""} ${t.hasUnread ? "unread" : "read"} ${picked ? "picked" : ""}`}
-                      onClick={(ev) => {
-                        if (ev.shiftKey) { rangeSelect(i); return; }
-                        setSelected(i);
-                        open(t);
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        className="row-check"
-                        checked={picked}
-                        aria-label={`Select ${t.subject}`}
-                        onClick={(ev) => ev.stopPropagation()}
-                        onChange={() => toggleSelect(t.id, i)}
-                      />
-                      <span className="star" onClick={(ev) => { ev.stopPropagation(); mutateThread(t.starred ? "Unstarred" : "Starred", t.id, { starred: !t.starred }); }}>
-                        {t.starred ? "★" : "☆"}
-                      </span>
-                      <span className="sender">
-                        <span className="unread-dot" aria-hidden="true" />
-                        {participantsLabel(t)}
-                        {t.count > 1 && <span className="thread-pill">{t.count}</span>}
-                      </span>
-                      <span className="subj">
-                        <strong>{t.subject}</strong> <span className="prev">— {t.latest.preview}</span>
-                        {view === "focus" && (() => {
-                          const reason = threadPriority(t, vipEmails, now).reasons[0];
-                          return reason ? <span className="row-focus" title={threadPriority(t, vipEmails, now).reasons.join(" · ")}>⚡ {reason}</span> : null;
-                        })()}
-                        {t.labels.map((l) => (
-                          <span key={l} className="row-label">{l}</span>
-                        ))}
-                        {t.pinned && <span className="row-pin" title="Pinned">📌</span>}
-                        {t.muted && <span className="row-mute" title="Muted">🔕</span>}
-                        {hasNote(notes, t.id) && <span className="row-note" title="Has a private note">📝</span>}
-                        {t.reminderAt && <span className="row-reminder">⏰ {reminderLabel(t.latest, now)}</span>}
-                        {t.hasAttachment && <span className="row-attach">📎</span>}
-                      </span>
-                      <span className="time">{new Date(t.latestDate).toLocaleDateString()}</span>
-                      <span className="row-actions" role="group" aria-label="Quick actions">
-                        {rowActions({ hasUnread: t.hasUnread, pinned: t.pinned }, view).map((a) => (
-                          <button
-                            key={a.id}
-                            className="row-act"
-                            title={a.label}
-                            aria-label={a.label}
-                            onClick={(ev) => { ev.stopPropagation(); runRowAction(a.id, t, i); }}
-                          >
-                            {a.icon}
-                          </button>
-                        ))}
-                      </span>
-                    </li>
-                    );
-                  })}
-                </ul>
+                <ThreadList
+                  threads={threads}
+                  selected={selected}
+                  selection={selection}
+                  view={view}
+                  notes={notes}
+                  now={now}
+                  focusReasons={focusReasons}
+                  density={settings.density}
+                  emptyText={
+                    query
+                      ? "No matching mail."
+                      : view === "inbox"
+                      ? "Inbox zero ✨"
+                      : view === "focus"
+                      ? "Nothing needs your attention ✨"
+                      : view === "trash"
+                      ? "Trash is empty."
+                      : view === "spam"
+                      ? "No spam — nice."
+                      : "Nothing here."
+                  }
+                  api={listApi}
+                />
 
                 <section className="reader">
                   {openThread && openEmail ? (
-                    <article>
+                    <article key={openThread.id}>
                       <div className="thread-head">
                         <h2>{openThread.subject}</h2>
                         {openThread.count > 1 && <span className="thread-pill">{openThread.count} messages</span>}
@@ -3380,6 +3648,7 @@ export default function App() {
             )}
           </>
         )}
+        </Suspense>
       </main>
 
       {/* Inline triage menus — single conversation or the current bulk selection */}
@@ -3490,13 +3759,15 @@ export default function App() {
       )}
 
       {askOpen && (
-        <AskPanel
-          emails={scoped}
-          now={now}
-          autoAsk={askInitial}
-          onOpenEmail={openById}
-          onClose={() => { setAskOpen(false); setAskInitial(undefined); }}
-        />
+        <Suspense fallback={null}>
+          <AskPanel
+            emails={scoped}
+            now={now}
+            autoAsk={askInitial}
+            onOpenEmail={openById}
+            onClose={() => { setAskOpen(false); setAskInitial(undefined); }}
+          />
+        </Suspense>
       )}
 
       {draft && (
@@ -3517,7 +3788,11 @@ export default function App() {
         />
       )}
 
-      {shortcutsOpen && <ShortcutsGuide shortcuts={effShortcuts} onClose={() => setShortcutsOpen(false)} />}
+      {shortcutsOpen && (
+        <Suspense fallback={null}>
+          <ShortcutsGuide shortcuts={effShortcuts} onClose={() => setShortcutsOpen(false)} />
+        </Suspense>
+      )}
       {onboarding && <Onboarding onClose={closeOnboarding} />}
 
       {toast && (
@@ -4060,6 +4335,84 @@ function StatsView({ stats, onGo }: { stats: InboxStats; onGo: (v: View) => void
             <span className="stat-label">{t.label}</span>
           </button>
         ))}
+      </div>
+
+      <SpeedCard />
+    </div>
+  );
+}
+
+// Speed, measured — not promised. Live keyboard latency (every triage
+// keystroke is timed from keydown to the next committed frame) plus an
+// on-demand benchmark that pushes a deterministic 10,000-email mailbox through
+// the real production pipeline (thread grouping → operator search → priority
+// ranking) on *this* machine.
+function SpeedCard() {
+  const [, setTick] = useState(0);
+  const [bench, setBench] = useState<BenchResult | null>(null);
+  const [running, setRunning] = useState(false);
+  const lat = latencySnapshot();
+
+  const runBench = () => {
+    setRunning(true);
+    // Let the button repaint before the (~quarter-second) measured burst.
+    window.setTimeout(() => {
+      setBench(runPipelineBenchmark(10_000));
+      setRunning(false);
+    }, 30);
+  };
+
+  return (
+    <div className="card speed-card">
+      <h3>⚡ Speed</h3>
+      <p className="muted">
+        Keyboard latency is measured live: every triage keystroke is timed from keydown to the next
+        painted frame. The benchmark runs the full production pipeline over a deterministic
+        10,000-email mailbox, right here in your browser.
+      </p>
+      <div className="speed-grid">
+        <div className="speed-tile">
+          <span className="stat-value">{lat.count ? formatMs(lat.p50) : "—"}</span>
+          <span className="stat-label">keystroke p50</span>
+        </div>
+        <div className="speed-tile">
+          <span className="stat-value">{lat.count ? formatMs(lat.p95) : "—"}</span>
+          <span className="stat-label">keystroke p95</span>
+        </div>
+        <div className="speed-tile">
+          <span className="stat-value">{lat.count}</span>
+          <span className="stat-label">actions sampled</span>
+        </div>
+        {lat.count > 0 && (
+          <button
+            className="link"
+            onClick={() => {
+              clearLatency();
+              setTick((t) => t + 1);
+            }}
+          >
+            reset
+          </button>
+        )}
+      </div>
+      <div className="speed-bench">
+        <button className="add-btn" onClick={runBench} disabled={running}>
+          {running ? "Running…" : bench ? "Run again" : "Run 10k benchmark"}
+        </button>
+        {bench && (
+          <div className="bench-results">
+            <span>
+              <strong>{bench.n.toLocaleString()}</strong> emails → <strong>{bench.threads.toLocaleString()}</strong> conversations
+            </span>
+            <span>group <strong>{formatMs(bench.groupMs)}</strong></span>
+            <span>search <strong>{formatMs(bench.searchMs)}</strong></span>
+            <span>rank <strong>{formatMs(bench.rankMs)}</strong></span>
+            <span>
+              full pipeline <strong>{formatMs(bench.totalMs)}</strong> ·{" "}
+              <strong>{bench.opsPerSec >= 100 ? Math.round(bench.opsPerSec) : bench.opsPerSec.toFixed(1)}</strong> passes/sec
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

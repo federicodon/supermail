@@ -242,6 +242,21 @@ Legend: ✅ shipped · 🟡 partial / in progress · ⬜ not started
 | Hold / schedule a slot | Yes | Yes, in mock calendar (real writes intentionally disabled) | 🔒 |
 | Provider parity (mock + live hook) | n/a | `MockCalendarProvider`; Google/MCP mapping documented | ✅ |
 
+## 17. Speed, measured
+
+| Capability | Superhuman | SuperMail | Status |
+|---|---|---|---|
+| "Every interaction under 100ms" | Claimed (brand promise) | **Measured in-product**: every keyboard triage action is timed keydown → next painted frame; live p50/p95/max in Stats → ⚡ Speed (p50 ~10–17ms, p95 ~32–41ms in headless-Chromium verification of the production build) | ✅ |
+| Instant list at any mailbox size | Yes | **Windowed (virtualized) conversation list** — fixed-height rows, exact math (`src/lib/virtualList.ts`): a 6,000-thread mailbox renders ~30 DOM rows, jump-to-bottom is instant, scroll cost is O(viewport) not O(mailbox) | ✅ |
+| Keyboard cursor always visible | Yes | **Scroll-follow** (`followScrollTop`): `j`/`k`/`Shift+J` keep the selection pixel-exactly in view — previously the cursor could walk off-screen | ✅ |
+| Fast typing in search | Yes | The input renders at keystroke speed; the operator pipeline follows via `useDeferredValue` | ✅ |
+| Efficient re-rendering | n/a (closed source) | Quantized 30s UI clock (the memo pipeline stays valid between ticks — it used to re-derive on *every* render via a fresh `Date.now()`), memoized rows behind a stable dispatch ref, one-shot Focus reason map | ✅ |
+| Efficient persistence | n/a | Debounced (350ms) whole-state save + `pagehide`/`beforeunload` flush — was a synchronous full-mailbox serialize per action | ✅ |
+| Small critical bundle | n/a | Settings / Calendar / People / Today / Shortcut guide / Ask AI are code-split (lazy); critical JS 394KB (131KB gzip) with ~40KB of view chunks on demand | ✅ |
+| Reproducible benchmark | — | **Stats → ⚡ Speed → Run 10k benchmark**: a deterministic 10,000-email mailbox through the real pipeline (group → search → rank), ~50ms total / ~20 full passes/sec measured; deterministic generator + injectable clock, unit-tested (`src/lib/perf.ts`) | ✅ |
+| No first-paint theme flash | Yes | Persisted theme vars re-applied by an inline `index.html` script before the bundle loads | ✅ |
+| Smart time labels | Yes ("9:41 AM") | Cached `Intl` formatters: today → clock time, "Yesterday", same year → "Jun 5", older → "Jun 5, 2025" (`src/lib/timeLabels.ts`) — replaces per-row `toLocaleDateString()` | ✅ |
+
 ## 16. Multiple accounts / unified inbox
 
 | Capability | Superhuman | SuperMail | Status |
@@ -261,6 +276,44 @@ Legend: ✅ shipped · 🟡 partial / in progress · ⬜ not started
 
 ## Shipped backlog (most recent first)
 
+- **Slice 89 (Speed engine: virtualized list, quantized clock, latency HUD,
+  10k benchmark, design-system pass)** — made "faster than Superhuman" a
+  measured property instead of a vibe, and fixed the systemic render costs that
+  had accumulated under the feature work. **Engine:** (1) the UI clock was a
+  fresh `Date.now()` *per render*, poisoning every downstream memo — it's now
+  state on a 30s tick (+ tab-refocus), so the filter → search → group → rank
+  pipeline stays cached between ticks; (2) the conversation list is **windowed**
+  (`src/lib/virtualList.ts`: pure `virtualWindow` / `followScrollTop` math,
+  fixed-height rows) and split into memoized `ThreadRow`s behind a stable
+  dispatch ref — a 6,000-thread mailbox renders ~30 DOM rows and a `j`/`k` move
+  repaints exactly two of them, with **pixel-exact scroll-follow** (fixing a
+  real bug: the keyboard cursor could walk off-screen); (3) search input goes
+  through `useDeferredValue` so typing never blocks on the operator pipeline;
+  (4) persistence is debounced (350ms + `pagehide` flush) instead of a
+  synchronous full-mailbox serialize per action; (5) per-row
+  `toLocaleDateString()` was replaced by cached-formatter **smart time labels**
+  ("9:41 AM" / "Yesterday" / "Jun 5" — `src/lib/timeLabels.ts`); (6) Focus
+  reasons are computed once per thread set, not twice per row; (7) Settings /
+  Calendar / People / Today / ShortcutsGuide / AskPanel are **code-split**
+  (critical JS 423KB → 394KB + on-demand chunks); (8) the tab title shows the
+  unread count. **Proof:** `src/lib/perf.ts` — every keyboard action is timed
+  keydown → next painted frame into a ring buffer (live p50/p95/max in a new
+  **Stats → ⚡ Speed** card) and a one-click **10k benchmark** pushes a
+  deterministic synthetic mailbox through the real pipeline (injectable clock).
+  Headless-Chromium verification of the production build: keystroke p50
+  ~10–17ms / p95 ~32–41ms, 10k pipeline ~50ms, 6k-mailbox cold load → rows
+  ~500ms, jump-to-row-6000 instant. **Design:** a token pass on styles.css
+  (radius/elevation/motion vars, spring easing), frosted-glass overlays with
+  pop-in, reader slide-in, toast/bulk-bar/menu micro-motions, themed thin
+  scrollbars, `:focus-visible` rings, `prefers-reduced-motion` support, sender
+  **avatars** in the list, refined unread/read treatment, centered empty
+  states — and a real layout fix (`minmax(0,1fr)` app row) so stacked banners
+  can no longer push the list/reader below the fold. A pre-paint inline script
+  in `index.html` re-applies the persisted theme so dark-theme users never see
+  a white flash; SVG favicon added. +27 tests across three new pure modules
+  (now **675 passing**, 57 files); build green; verified end-to-end in headless
+  Chromium (keyboard triage, palette, benchmark, theme persistence, 6k-mailbox
+  stress).
 - **Slice 88 (Live Gmail search from SuperMail queries)** — closed the next real
   mailbox gap: connected Gmail users can now push the current SuperMail search
   to Gmail's server-side search, then merge those live results back into the

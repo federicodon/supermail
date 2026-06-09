@@ -9,12 +9,56 @@
   --accent: #5a52e0;
   --accent-2: #0ea5a3;
   --unread: #0d0d14;
+
+  /* Design tokens — radius / elevation / motion, shared by every surface. */
+  --r-s: 7px;
+  --r-m: 10px;
+  --r-l: 14px;
+  --shadow-1: 0 1px 2px rgba(8, 10, 24, .07), 0 1px 1px rgba(8, 10, 24, .04);
+  --shadow-2: 0 6px 22px rgba(8, 10, 24, .14), 0 2px 6px rgba(8, 10, 24, .08);
+  --shadow-3: 0 24px 70px rgba(8, 10, 24, .30), 0 6px 18px rgba(8, 10, 24, .14);
+  --speed-1: 90ms;   /* hover / press feedback */
+  --speed-2: 160ms;  /* reveals, menus */
+  --speed-3: 240ms;  /* overlays, reader */
+  --ease: cubic-bezier(.2, .8, .25, 1);
+
   font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
 }
+:root[data-theme-group="dark"] {
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-2: 0 6px 22px rgba(0, 0, 0, .45), 0 2px 6px rgba(0, 0, 0, .3);
+  --shadow-3: 0 24px 70px rgba(0, 0, 0, .6), 0 6px 18px rgba(0, 0, 0, .4);
+}
 
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+
+/* Keyboard-first app → first-class focus rings (mouse clicks stay clean). */
+:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 1px; border-radius: 4px; }
+:focus:not(:focus-visible) { outline: none; }
+
+/* Thin, theme-aware scrollbars everywhere. */
+* { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 38%, transparent) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 32%, transparent); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--muted) 55%, transparent); border: 2px solid transparent; background-clip: padding-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+.list, .reader, .settings, .person-detail { overscroll-behavior: contain; }
+
+/* Subtle, fast press feedback on every button. */
+button { transition: background-color var(--speed-1) var(--ease), border-color var(--speed-1) var(--ease), color var(--speed-1) var(--ease), box-shadow var(--speed-1) var(--ease), transform var(--speed-1) var(--ease); }
+button:active:not(:disabled) { transform: scale(.985); }
+
+/* Accessibility: honor reduced-motion — kill animations, keep state changes. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
 kbd {
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -27,7 +71,9 @@ kbd {
 code { font-family: ui-monospace, monospace; }
 button { cursor: pointer; font: inherit; }
 
-.app { display: grid; grid-template-columns: 212px 1fr; height: 100vh; }
+/* minmax(0,1fr) row: without it the implicit grid row grows with content, so
+   stacked banners could push the bottom of the list/reader below the fold. */
+.app { display: grid; grid-template-columns: 212px 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; }
 
 /* Sidebar */
 .sidebar {
@@ -37,6 +83,8 @@ button { cursor: pointer; font: inherit; }
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
 }
 .brand { font-size: 15px; font-weight: 700; letter-spacing: -.01em; margin: 2px 4px 8px; color: var(--text); }
 .compose-btn {
@@ -175,7 +223,7 @@ nav { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .accent-dot.active { border-color: var(--text); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
 
 /* Main */
-.main { display: flex; flex-direction: column; overflow: hidden; }
+.main { display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
 .topbar { display: flex; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 .search {
   flex: 1;
@@ -223,56 +271,82 @@ nav { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .sweep:hover { color: var(--text); border-color: var(--accent); }
 .sweep .count { background: var(--panel-2); color: var(--muted); border-radius: 10px; padding: 0 6px; font-size: 11px; }
 
-.panes { display: grid; grid-template-columns: minmax(320px, 1fr) 1.3fr; flex: 1; overflow: hidden; }
+.panes { display: grid; grid-template-columns: minmax(320px, 1fr) 1.3fr; flex: 1; overflow: hidden; min-height: 0; }
 
-/* List */
+/* List — virtualized: rows are FIXED-HEIGHT so the windowing math in
+   src/lib/virtualList.ts (ROW_HEIGHT / ROW_HEIGHT_COMPACT) is exact. Keep the
+   two heights in sync with that module. */
 .list { list-style: none; margin: 0; padding: 0; overflow-y: auto; border-right: 1px solid var(--line); }
+.list .vpad { border: none; padding: 0; margin: 0; }
 .row {
   display: grid;
   grid-template-columns: 22px 130px 1fr auto;
   gap: 8px;
   align-items: center;
-  padding: 11px 14px;
+  height: 44px; /* = ROW_HEIGHT (virtualList.ts) */
+  padding: 0 14px;
+  overflow: hidden;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
   cursor: pointer;
   position: relative;
-  transition: background .1s ease;
+  transition: background var(--speed-1) var(--ease);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
 }
-.row.sel { background: color-mix(in srgb, var(--accent) 10%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
+.row::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  background: var(--accent); transform: scaleY(0); transition: transform var(--speed-1) var(--ease);
+}
+.row.sel { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.row.sel::before { transform: scaleY(1); }
 .row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .row.unread .sender, .row.unread .subj strong { color: var(--unread); font-weight: 700; }
-.row.read { opacity: 0.82; }
-.star { color: var(--muted); font-size: 13px; line-height: 1; }
-.star:hover { color: var(--accent-2); }
-.sender { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row.read .sender-text, .row.read .subj strong { color: color-mix(in srgb, var(--text) 78%, var(--muted)); }
+.star { color: color-mix(in srgb, var(--muted) 70%, transparent); font-size: 13px; line-height: 1; transition: color var(--speed-1) var(--ease), transform var(--speed-1) var(--ease); }
+.star:hover { color: var(--accent-2); transform: scale(1.15); }
+.sender { font-size: 13px; font-weight: 600; color: var(--text); min-width: 0; }
+.sender-text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.row-av {
+  width: 22px; height: 22px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 9px; font-weight: 700; letter-spacing: .02em;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.06);
+}
 .subj { font-size: 13px; color: var(--text); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .subj strong { font-weight: 400; }
 .subj .prev { color: var(--muted); font-weight: 400; }
-.time { font-size: 11px; color: var(--muted); justify-self: end; font-variant-numeric: tabular-nums; }
+.time { font-size: 11px; color: var(--muted); justify-self: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .row .unread-dot { display: none; }
 .row.unread .unread-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 /* Hover quick-actions — a floating triage toolbar revealed on row hover, over
    the date column. Keyboard-first users keep their shortcuts; this gives mouse
    parity for the same verbs without opening the conversation. */
 .row-actions {
-  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
-  display: none; gap: 2px; align-items: center;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  padding: 2px 3px; box-shadow: 0 4px 14px rgba(0,0,0,.22);
+  position: absolute; right: 10px; top: 50%;
+  display: inline-flex; gap: 2px; align-items: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-s);
+  padding: 2px 3px; box-shadow: var(--shadow-2);
+  opacity: 0; transform: translateY(-50%) translateX(4px); pointer-events: none;
+  transition: opacity var(--speed-1) var(--ease), transform var(--speed-1) var(--ease);
 }
-.row:hover .row-actions, .row.sel .row-actions { display: inline-flex; }
+.row:hover .row-actions, .row.sel .row-actions { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; }
 .row:hover .time, .row.sel .time { visibility: hidden; }
 .row-act {
   background: transparent; border: none; color: var(--muted);
   border-radius: 6px; padding: 3px 6px; font-size: 13px; line-height: 1; cursor: pointer;
 }
 .row-act:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); }
-.empty { padding: 40px; text-align: center; color: var(--muted); }
+.empty { padding: 56px 24px; text-align: center; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.empty::before { content: "✓"; display: block; margin: 0 auto 10px; width: 44px; height: 44px; line-height: 44px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); font-size: 20px; }
+/* Code-split view loading placeholder (rarely visible — chunks are tiny). */
+.lazy-loading { flex: 1; min-height: 200px; }
 
 /* Reader */
 .reader { overflow-y: auto; padding: 28px 32px; }
-.reader > article { max-width: 760px; margin: 0 auto; }
-.reader-empty { color: var(--muted); padding-top: 40px; }
+.reader > article { max-width: 760px; margin: 0 auto; animation: reader-in var(--speed-3) var(--ease); }
+@keyframes reader-in { from { opacity: 0; transform: translateY(7px); } }
+.reader-empty { color: var(--muted); padding-top: 40px; text-align: center; }
+.reader-empty kbd { margin: 0 1px; }
 .reader h2 { margin: 0 0 12px; font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
 .meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin-bottom: 14px; }
 .chip { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; margin-left: 6px; font-size: 11px; }
@@ -329,15 +403,23 @@ nav { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .snooze-picker { display: flex; gap: 8px; margin-top: 10px; }
 .snooze-picker button { background: var(--accent); color: #fff; border: none; border-radius: 7px; padding: 8px 10px; }
 
-/* Overlays */
-.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 50; }
-.palette, .shortcuts { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; width: 560px; max-width: 92vw; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-.compose { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; width: 620px; max-width: 94vw; box-shadow: 0 24px 70px rgba(0,0,0,.45); overflow: hidden; }
-.palette-input { width: 100%; background: transparent; border: none; border-bottom: 1px solid var(--line); color: var(--text); padding: 16px; font-size: 16px; outline: none; }
+/* Overlays — frosted backdrop, spring pop-in (Superhuman's glassy signature). */
+.overlay {
+  position: fixed; inset: 0; background: rgba(8, 9, 18, .42);
+  backdrop-filter: blur(7px) saturate(1.1); -webkit-backdrop-filter: blur(7px) saturate(1.1);
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 50;
+  animation: overlay-in var(--speed-2) var(--ease);
+}
+.overlay > * { animation: pop-in var(--speed-2) var(--ease); }
+@keyframes overlay-in { from { background: rgba(8,9,18,0); backdrop-filter: blur(0); } }
+@keyframes pop-in { from { opacity: 0; transform: translateY(6px) scale(.985); } }
+.palette, .shortcuts { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-l); width: 560px; max-width: 92vw; box-shadow: var(--shadow-3); overflow: hidden; }
+.compose { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-l); width: 620px; max-width: 94vw; box-shadow: var(--shadow-3); overflow: hidden; }
+.palette-input { width: 100%; background: transparent; border: none; border-bottom: 1px solid var(--line); color: var(--text); padding: 16px 18px; font-size: 16px; outline: none; }
 .palette-context { padding: 6px 16px; color: var(--muted); font-size: 12px; }
 .palette-list { list-style: none; margin: 0; padding: 6px; max-height: 320px; overflow-y: auto; }
-.palette-list li { padding: 10px 12px; border-radius: 7px; }
-.palette-list li.active { background: var(--accent); color: #fff; }
+.palette-list li { padding: 10px 12px; border-radius: var(--r-s); }
+.palette-list li.active { background: var(--accent); color: #fff; box-shadow: var(--shadow-1); }
 .muted { color: var(--muted); }
 
 .compose { display: flex; flex-direction: column; }
@@ -395,7 +477,13 @@ nav { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .endpoints { font-size: 12px; line-height: 1.8; }
 
 /* Toast */
-.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #fff; padding: 10px 18px; border-radius: 8px; z-index: 60; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--accent); color: #fff; padding: 10px 18px; border-radius: var(--r-m);
+  z-index: 60; box-shadow: var(--shadow-3);
+  animation: toast-in var(--speed-2) var(--ease);
+}
+@keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(10px); } }
 
 /* ---- Slice 3: rich UI (sidebar, splits, reminders, outbox, AI, onboarding) ---- */
 
@@ -711,7 +799,8 @@ nav { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 /* ---- Slice 10/30: density + deep settings (themes now applied via JS inline
    CSS vars from src/lib/theme.ts; data-theme / data-theme-group remain as CSS
    hooks) ---- */
-:root[data-density="compact"] .row { padding: 6px 12px; }
+:root[data-density="compact"] .row { height: 34px; /* = ROW_HEIGHT_COMPACT (virtualList.ts) */ padding: 0 12px; contain-intrinsic-size: auto 34px; }
+:root[data-density="compact"] .row-av { width: 18px; height: 18px; font-size: 8px; }
 :root[data-density="compact"] .nav-item { padding: 6px 10px; }
 :root[data-density="compact"] .card { padding: 12px 16px; margin-bottom: 12px; }
 :root[data-density="compact"] .msg-head { padding: 7px 12px; }
@@ -815,7 +904,7 @@ nav { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .import-btn input { display: none; }
 
 /* ---- Slice 9: multi-select + bulk actions ---- */
-.row { grid-template-columns: 16px 20px 150px minmax(0, 1fr) auto; }
+.row { grid-template-columns: 16px 20px 178px minmax(0, 1fr) auto; }
 .row-check { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; opacity: 0; }
 .row:hover .row-check, .row.picked .row-check, .row.sel .row-check { opacity: 1; }
 .row.picked { background: color-mix(in srgb, var(--accent) 10%, transparent); box-shadow: inset 2px 0 0 var(--accent-2); }
@@ -977,3 +1066,28 @@ nav { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
 .today-empty-emoji { font-size: 34px; margin-bottom: 8px; }
 .today-empty p { margin: 4px 0; }
 .today-note { margin-top: 22px; font-size: 11px; border-top: 1px solid var(--line); padding-top: 12px; }
+
+/* ---- Slice 89: speed engine (virtualized list, latency HUD, benchmark) ---- */
+
+/* Stats → Speed: live keyboard latency + the in-browser 10k pipeline benchmark. */
+.speed-card { max-width: 760px; }
+.speed-grid { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+.speed-tile { display: flex; flex-direction: column; gap: 2px; }
+.speed-tile .stat-value { font-variant-numeric: tabular-nums; }
+.speed-bench { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.bench-results { display: flex; gap: 8px 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+.bench-results strong { color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* Menus & inline reveals get the same quick pop as overlays. */
+.search-help, .send-later-menu, .autocomplete { animation: pop-in var(--speed-2) var(--ease); }
+.search-help { box-shadow: var(--shadow-2); border-radius: var(--r-m); }
+
+/* Topbar: a touch of depth so the list scrolls "under" it. */
+.topbar { position: relative; z-index: 2; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+
+/* Bulk bar slides in when a selection starts. */
+.bulk-bar { animation: bulk-in var(--speed-2) var(--ease); }
+@keyframes bulk-in { from { opacity: 0; transform: translateY(-4px); } }
+
+/* Sidebar nav badge: tabular digits so counts don't wobble as they change. */
+.nav-badge { font-variant-numeric: tabular-nums; }
