@@ -1,0 +1,9 @@
+node_modules
+dist
+.env.local
+.env
+*.log
+.DS_Store
+# Captured real-mail snapshot (contains personal email) — never commit.
+public/live-snapshot.json
+tools/_new.json

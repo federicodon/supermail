@@ -1,0 +1,36 @@
+{
+  "name": "supermail",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Superhuman-like keyboard-first Gmail productivity client (local app)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "sync": "node server/index.mjs",
+    "snapshot": "node tools/build-live-snapshot.mjs",
+    "live": "node server/launch.mjs"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.8",
+    "imapflow": "^1.3.6",
+    "mailparser": "^3.9.9",
+    "nodemailer": "^6.10.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "overrides": {
+    "pino": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2",
+    "vitest": "^2.0.5"
+  }
+}
