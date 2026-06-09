@@ -116,7 +116,23 @@ images and **downloadable attachments** — loaded on demand so the live mirror
 stays light. The default look is a clean, light **Superhuman** theme (switch any
 time in Settings → Appearance; a Superhuman Dark variant is included).
 
-### Setup (~2 minutes)
+### One-command setup (recommended — human or agent)
+
+```bash
+npm run setup        # = bash scripts/setup.sh
+```
+
+Idempotent and agent-friendly: checks Node, installs + builds, prompts once
+for the Gmail address + App Password if `.env.local` is missing (the only
+human step — create it at <https://myaccount.google.com/apppasswords>),
+installs the macOS LaunchAgent (always-on bridge, restarts on crash, survives
+reboots), **verifies real sync** via `/api/health` (prints "LIVE — synced with
+<account> (N messages mirrored)"), and leaves SuperMail at
+<http://localhost:8787>. Exit 0 = synced; exit 1 = it tells you exactly what
+to fix. Then load the Chrome extension (`extension/` — see
+[`extension/README.md`](extension/README.md)) or just bookmark the URL.
+
+### Manual setup (~2 minutes)
 
 1. **Enable 2-Step Verification** on the account → <https://myaccount.google.com/security>
 2. **Create an App Password** (choose "Mail") → <https://myaccount.google.com/apppasswords>

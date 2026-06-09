@@ -11,6 +11,7 @@
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "sync": "node server/index.mjs",
+    "setup": "bash scripts/setup.sh",
     "snapshot": "node tools/build-live-snapshot.mjs",
     "live": "node server/launch.mjs"
   },
